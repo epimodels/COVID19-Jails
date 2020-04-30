@@ -1,0 +1,786 @@
+---
+title: "COVID19 Scenario Report"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.height = 5.5, fig.width = 9, warning = FALSE,cache = TRUE)
+
+############### WARNNING WARNING WARNING WARNING WARNING ######################
+############### CACHE IS SET TO TRUE, SO IF THE UNDERLYING MODELS CHANGE ######
+############### THIS MAY NOT UPDATE CORRECTLY. ################################
+############### IF YOU CHANGE THEM, ###########################################
+############### EITHER TURN THAT OFF OR DELETE YOUR CACHE #####################
+
+knitr::opts_chunk$set(echo = TRUE,fig.height = 12, fig.width = 8, warning = FALSE)
+
+### LOAD LIBRARIES
+# library(R0)
+library(dplyr)
+library(tidyverse)
+library(tidyverse)
+library(forcats)
+library(ggforce)
+library(gghighlight)
+library(ggplot2)
+library(ggrepel)
+library(ggsci)
+library(colorspace)
+library(purrr)
+
+## LOAD FUNCTIONS
+purrr::walk(dir(here::here("R"), full.names = TRUE),~source(.x))
+
+## SET OPTIONS
+options(scipen = 15) #no scientific notations people
+
+## LOAD BASE PARAMETERS
+times <- seq(0,180*24,by=1)
+pop <- 1218452
+
+xstart <- c(Sk=.18*pop, Ek=0, Ik=1, Rk=0,
+            Slc=.6*pop, Elc=0,Ilc=0,Hlc=0,Rlc=0,
+            Sec=.18*pop, Eec=0,Iec=0,Hec=0,Rec=0,
+            Shc=.04*pop,Ehc=0,Ihc=0,Hhc=0,Rhc=0,
+            Soc=256,Eoc=0,Ioc=0,Hoc=0,Roc=0,
+            Slp=0,Elp=0,Ilp=0,Rlp=0,
+            Sep=0,Eep=0,Iep=0,Rep=0,
+            Shp=0,Ehp=0,Ihp=0,Rhp=0,
+            Slj=1650,Elj=0,Ilj=0,Hlj=0,Rlj=0,
+            Sej=25,Eej=0,Iej=0,Hej=0,Rej=0,
+            Shj=825,Ehj=0,Ihj=0,Hhj=0,Rhj=0,
+            Slt=0,Elt=0,Ilt=0,Rlt=0,
+            Set=0,Eet=0,Iet=0,Ret=0,
+            Sht=0,Eht=0,Iht=0,Rht=0,
+            Soj=128,Eoj=0,Ioj=0,Roj=0,
+            CommunityInfections = 0,
+            StaffInfections=0,
+            InmateInfections = 0,
+            CommunityDeaths = 0,
+            StaffDeaths = 0,
+            InmateDeaths = 0,
+            CommunityHosp = 0,
+            StaffHosp = 0,
+            InmateHosp = 0,
+            TotalArrests = 1650+25+825
+          )
+
+pop_with_jail_and_staff = sum(xstart) - xstart["TotalArrests"]
+
+# updated to use Betas from South Korea rather than China, per KL 
+betas_base <- generate_mixing_betas(kids = c(1, .51, .08),
+                                  adult = c(0.57, 2.43, 1.05),
+                                  elderly = c(.02, .3, .49))
+
+arrest_rates_base <- c("low_risk" = 1, "high_risk" = 1, "elderly" = 1)
+
+#betas_base <- 0*betas_base + mean(betas_base)
+
+# SET SOME THEMES - MAKE OUR GGPLOT LIFE EASIER
+# GOING WITH NPG Colors unless someone has an alternative preference
+theme_set(theme_basic_white())
+options(ggplot2.continuous.colour="viridis")
+options(ggplot2.continuous.fill = "viridis")
+```
+
+## Baseline Scenarios
+
+### Calibrate c0
+
+```{r calibrate_c0}
+processing_pop <- 250 # 100 people in processing, 150 in trial 
+jail_pop <- 2600
+c0 <- 1/(24*4.5) # calibrated to get to ~ 80% of total pop infected when then infection has run it's course, per imperial college report. using the code below, we get to 76.7% of the pop infected in ~5 months. the 24 is to convert daily contact rates to hourly.
+
+constant_bau <- 1/(pop)*c0
+
+# baseline adult beta: 
+adult_base <- betas_base[2,2]
+
+# assuming that processing and jail are 6x and 3x that, respectively (based on conversations 
+# with ACLU about avg # contacts per day in jail 
+cp <- 6
+cj <- 3
+processing_mix_base <- adult_base*c0/(processing_pop) * cp
+jail_mix_base <- adult_base*c0/(jail_pop) * cj
+high_risk_factor_base <- 1 # this is no longer used in the code for now, setting to 1 
+
+params_bau <- set_parameters(betas_base*constant_bau, 
+                             processing_mix_base,
+                             jail_mix_base, 
+                             pop = pop, 
+                             high_risk_factor = high_risk_factor_base
+                             )
+
+resdf_bau <- tidy_covid_run(xstart,times,params = params_bau, run_name = "Business As Usual")
+
+
+#calibrate to this from imperial college report: 
+#80% of Americans would get the disease. (if we don't do anything)
+
+## please leave me a way to calculate the percent jail infected and percent community infected, this is my main debugging tool!
+plot_individual_diagnostics(resdf_bau, run_name = "Business As Usual")
+
+
+
+resdf_bau %>% summarize(max(metric_community_infections + metric_incarceratedpeople_infections + metric_staff_infections)/pop)
+
+resdf_bau %>% summarize(max(metric_community_infections + metric_incarceratedpeople_infections + metric_staff_infections)/pop_with_jail_and_staff)
+
+resdf_bau %>% summarize(max(metric_community_deaths + metric_incarceratedpeople_deaths + metric_staff_deaths)/pop)
+
+#a good test that things are working
+#ggplot(resdf_bau, aes(x=time, y=totalPop)) + geom_line()
+
+
+# # ##check R0 just for funsies
+# resdf_bau <- resdf_bau %>%
+#   mutate(epid = rowSums(dplyr::select(.,dplyr::starts_with("I"))))
+# # 
+# plot(round(resdf_bau$epid)[seq(1, nrow(resdf_bau),24)])
+# # #generation time describes the duration from the onset of infectiousness in the primary case to the onset of infectiousness in a secondary case (infected by the primary case).
+# # 
+# # ##calculating back of envelope as:
+# # ##incubation period + .75*infectious period
+# # ##incubation period = 5 days, infectious period = 10
+# GT <- generation.time("gamma", c(1,12))
+# R0 <- est.R0.ML(round(resdf_bau$epid)[seq(1, nrow(resdf_bau),24)], GT)
+# #We can see that this gives us a reasonable R0 too
+# R0
+
+
+#make it run for longer
+
+# sum(xstart) - resdf_bau %>% summarize(max(metric_community_infections + metric_inmate_infections + metric_staff_infections))
+# tmp <- resdf_bau %>% dplyr::select(starts_with("S"))
+# 1 - sum(tmp[nrow(tmp),])/sum(xstart) #percent of people who got it at some point
+
+```
+
+### No Societal Shifts - BAU
+
+```{r bau_setup}
+#scenario 1: business as usual
+constant_bau <- 1/pop*c0
+processing_mix_base <- adult_base*c0/(processing_pop) *cp
+jail_mix_base <- adult_base*c0/(jail_pop) * cj
+high_risk_factor_base <- 1
+
+params_bau <- set_parameters(betas_base*constant_bau, 
+                             processing_mix_base, 
+                             jail_mix_base, 
+                             pop = pop, 
+                             high_risk_factor = high_risk_factor_base
+                             )
+resdf_bau <- tidy_covid_run(xstart,times,params = params_bau, run_name = "Business As Usual")
+
+#calibrate to this from imperial college report: 
+#80% of Americans would get the disease. (if we don't do anything)
+
+## please leave me a way to calculate the percent jail infected and percent community infected, this is my main debugging tool!
+plot_individual_diagnostics(resdf_bau, run_name = "Business As Usual")
+
+resdf_bau %>% summarize(max(metric_community_infections + 
+                            metric_incarceratedpeople_infections + 
+                            metric_staff_infections)/pop)
+
+```
+
+### "Shelter In Place"
+
+```{r sip}
+#scenario 2: shelter in place
+sip_impact <- 1.6 #shelter in place assumed to half the mixing paramters
+constant_sip <- constant_bau/sip_impact
+params_sip <- set_parameters(betas_base*constant_sip, 
+                          processing_mix_base, 
+                          jail_mix_base, 
+                          pop = pop, 
+                          quarantine_speedup_community = 1,
+                          high_risk_factor = high_risk_factor_base
+                          )
+
+resdf_sip <- tidy_covid_run(xstart,times,params = params_sip, run_name = "Shelter in Place")
+
+plot_individual_diagnostics(resdf_sip,"Shelter in Place")
+
+```
+
+### Comparisons Up To Here
+
+```{r first_comparison}
+comparison_df_base <- bind_rows(resdf_bau,resdf_sip)
+
+plot_composite_diagnostics(comparison_df_base,base_run_name = "Business As Usual")
+```
+
+## Arrest Reductions
+
+### Reducing Incoming Arrests (Net)
+
+```{r net_arrest_redux}
+#scenario 3: arrest fewer people
+constant_afp <- constant_sip
+params_afp <- set_parameters(betas_base*constant_sip, 
+                          processing_mix_base, #is this right?
+                          jail_mix_base, #is this right?
+                          pop = pop, 
+                          quarantine_speedup_community=1,
+                          arrest_rate_cut = arrest_rates_base * .1, # this helps me allow for different arres rates
+                          high_risk_factor = high_risk_factor_base
+                          )
+
+resdf_afp <- tidy_covid_run(xstart,times,params = params_afp, run_name = "Arrest Fewer People")
+
+plot_individual_diagnostics(resdf_afp,"Arrest Fewer People")
+```
+
+### Vulnerable Populations
+
+```{r vul_pops}
+#scenario 4: stop arresting vulnerable populations
+constant_vp <- constant_sip
+arrest_rates_vp <- arrest_rates_base
+arrest_rates_vp[names(arrest_rates_vp) == 'elderly'] <- .1 #assume some small share still can get arrested?
+arrest_rates_vp[names(arrest_rates_vp) == 'high_risk'] <- .1
+params_vp <- set_parameters(betas_base*constant_sip, 
+                          processing_mix_base, #is this right?
+                          jail_mix_base, #is this right?
+                          pop = pop, 
+                          quarantine_speedup_community=1,
+                          arrest_rate_cut = arrest_rates_vp, # this helps me allow for different arres rates
+                          high_risk_factor = high_risk_factor_base
+                          )
+
+resdf_vp <- tidy_covid_run(xstart,times,params = params_vp, run_name = "Vulnerable Only")
+
+plot_individual_diagnostics(resdf_vp,"Vulnerable Only")
+```
+
+### Remove Bail Eligible
+
+According to the [February Jail Report](https://www.phila.gov/media/20200320153910/Full-Public-Jail-Report-February-2020-1.pdf), 25% of cases are typically bail eligible so for now that's our placeholder.
+
+```{r bail_eligible}
+#scenario 4: stop arresting be
+
+constant_be <- constant_sip
+arrest_rates_be <- arrest_rates_base * .75 #assumes uniform across risk groups
+params_be <- set_parameters(betas_base*constant_be, 
+                          processing_mix_base, #is this right?
+                          jail_mix_base, #is this right?
+                          pop = pop, 
+                          quarantine_speedup_community=1,
+                          arrest_rate_cut = arrest_rates_be, 
+                          # this helps me allow for different arres rates
+                          high_risk_factor = high_risk_factor_base
+                          )
+
+resdf_be<- tidy_covid_run(xstart,times,params = params_be, run_name = "Bail Eligible")
+
+plot_individual_diagnostics(resdf_be,"Bail Eligible")
+```
+
+### Remove Low Level
+
+Got this from here:
+http://www.pacenterofexcellence.pitt.edu/counties/allegheny/crimeStats_allegheny.html
+
+Anything that is not "against persons" -- which is mostly Alcohol or Drug related, Public Order arrests.
+
+One modelling question - this would likely increase incarceration times for those remaining, no?
+
+```{r low_level}
+#scenario 5: stop arresting low level
+
+constant_ll <- constant_sip
+arrest_rates_ll <- arrest_rates_base * .1658 #assumes uniform across risk groups
+params_ll <- set_parameters(betas_base*constant_ll, 
+                          processing_mix_base, #is this right?
+                          jail_mix_base, #is this right?
+                          pop = pop, 
+                          quarantine_speedup_community=1,
+                          arrest_rate_cut = arrest_rates_ll, 
+                          # this helps me allow for different arres rates
+                          high_risk_factor = high_risk_factor_base
+                          )
+
+resdf_ll<- tidy_covid_run(xstart,times,params = params_ll, 
+                          run_name = "Low Level")
+
+plot_individual_diagnostics(resdf_ll,"Low Level")
+```
+
+### Comparisons Up To Here
+
+```{r second_comparison}
+#comparison_df_with_arrests <- bind_rows(comparison_df_base,resdf_afp,resdf_vp,resdf_be,resdf_ll)
+comparison_df_with_arrests <- bind_rows(resdf_sip,resdf_vp,resdf_afp,resdf_be,resdf_ll)
+
+plot_composite_diagnostics(comparison_df_with_arrests, base_run_name = "Shelter in Place")
+```
+
+## Reduce Incoming Arrests + Mass Release Equivalent Populations
+
+### Vulnerable Populations
+
+```{r vul_pop_plus_speed}
+release_speedup <- seq(1,2,by = .1)
+params_vp_release_speeds <- 
+  purrr::map(.x = release_speedup,
+             ~set_parameters(betas_base*constant_sip, 
+                          processing_mix_base, #is this right?
+                          jail_mix_base, #is this right?
+                          pop = pop, 
+                          quarantine_speedup_community=1,
+                          arrest_rate_cut = arrest_rates_vp, # this helps me allow for different arres rates
+                          high_risk_factor = high_risk_factor_base,
+                          faster_release = .x
+                          )) %>%
+  set_names(
+    paste0("Vulnerable Only + Release Speed ",release_speedup,"X Normal")
+    )
+
+resdf_vp_release <- purrr::map2_df(.x = params_vp_release_speeds,
+                                  .y = names(params_vp_release_speeds),
+                                  .f = ~tidy_covid_run(xstart,times,params = .x, 
+                                                       run_name = .y)
+                                  )
+
+plot_composite_diagnostics(
+  resdf_vp_release,
+  "Vulnerable Only + Release Speed 1X Normal",
+  "percent"
+)
+```
+
+### Remove Bail Eligible
+
+```{r bail_eligible_plus_speed}
+release_speedup <- seq(1,2,by = .1)
+params_be_release_speeds <- 
+  purrr::map(.x = release_speedup,
+             ~set_parameters(betas_base*constant_be, 
+                          processing_mix_base, #is this right?
+                          jail_mix_base, #is this right?
+                          pop = pop, 
+                          quarantine_speedup_community=1,
+                          arrest_rate_cut = arrest_rates_be, 
+                          # this helps me allow for different arres rates
+                          high_risk_factor = high_risk_factor_base,
+                          faster_release = .x
+                          )) %>%
+  set_names(
+    paste0("Bail Eligible + Release Speed ",release_speedup,"X Normal")
+    )
+
+resdf_be_release <- purrr::map2_df(.x = params_be_release_speeds,
+                                  .y = names(params_be_release_speeds),
+                                  .f = ~tidy_covid_run(xstart,times,params = .x, 
+                                                       run_name = .y)
+                                  )
+
+plot_composite_diagnostics(
+  resdf_be_release,
+  "Bail Eligible + Release Speed 1X Normal",
+  "percent"
+)
+```
+
+### Remove Low Level
+
+```{r low_level_plus_speed}
+release_speedup <- seq(1,2,by = .1)
+params_ll_release_speeds <- 
+  purrr::map(.x = release_speedup,
+             ~set_parameters(betas_base*constant_ll, 
+                          processing_mix_base, #is this right?
+                          jail_mix_base, #is this right?
+                          pop = pop, 
+                          quarantine_speedup_community=1,
+                          arrest_rate_cut = arrest_rates_ll, 
+                          # this helps me allow for different arres rates
+                          high_risk_factor = high_risk_factor_base,
+                          faster_release = .x
+                          )) %>%
+  set_names(
+    paste0("Low Level + Release Speed ",release_speedup,"X Normal")
+    )
+
+resdf_ll_release <- purrr::map2_df(.x = params_ll_release_speeds,
+                                  .y = names(params_ll_release_speeds),
+                                  .f = ~tidy_covid_run(xstart,times,params = .x, 
+                                                       run_name = .y)
+                                  )
+
+plot_composite_diagnostics(resdf_ll_release,
+                       base_run_name = "Low Level + Release Speed 1X Normal",
+                       "percent"
+                       )
+```
+
+### Comparions Up to Here
+
+```{r comparisons_release_rates}
+comparisons_df_arrest_plus_release <- bind_rows(
+  resdf_sip,
+  resdf_be_release,
+  resdf_ll_release,
+  resdf_vp_release
+)
+```
+TODO: Need to create a new graph type for this. Probably a line graph based on finals
+
+## In Jail Interventions
+
+### Reduce Population Sufficiently that Mixing Reduces
+
+Assume that to get here, we need to get to a substantial population reduction
+
+Just using the bail eligible reduction scenario, should I choose other?
+
+```{r mixing_redux}
+processing_mix_equal_community <- processing_mix_base/sip_impact
+jail_mix_equal_community <-jail_mix_base/sip_impact
+
+processsing_mix_seq <- seq(processing_mix_base,processing_mix_equal_community,length.out = 10)
+jail_mix_seq <- seq(jail_mix_base,jail_mix_equal_community, length.out = 10)
+nth_of_seq <- scales::percent(seq(1/length(jail_mix_seq),1,length.out = length(jail_mix_seq)),accuracy = 1)
+
+params_be_mix_seq <- purrr::map2(.x = processsing_mix_seq,
+                              .y = jail_mix_seq,
+                              ~set_parameters(betas_base*constant_be, 
+                                              .x,
+                                              .y, #is this right?
+                                              pop = pop, 
+                                              quarantine_speedup_community=1,
+                                              arrest_rate_cut = arrest_rates_be, 
+                                              high_risk_factor = high_risk_factor_base
+                          )
+  ) %>%
+  set_names(
+    paste0("Bail Eligible + Mixing Intervention : ",nth_of_seq," of Shelter in Place")
+    )
+
+resdf_be_mix <- purrr::map2_df(.x = params_be_mix_seq,
+                                  .y = names(params_be_mix_seq),
+                                  .f = ~tidy_covid_run(xstart,times,params = .x, 
+                                                       run_name = .y)
+                                  )
+
+plot_composite_diagnostics(resdf_be_mix,
+                       base_run_name = paste0("Bail Eligible + Mixing Intervention : ",nth_of_seq[1]," of Shelter in Place"),
+                       "percent"
+                       )
+```
+
+
+### Reduce the Punishment for Being Sick
+
+Effectively, this is modifying the parameter to be equal to general population access to healthcare. I'm going to use the SIP choice, but am open to someone convincing me to use a different baseline scenario
+
+```{r healthcare_access}
+detection_seq <- c(.95,.99,1)
+
+params_sip_detection_seq <- purrr::map(detection_seq,
+                                   ~set_parameters(betas_base*constant_sip, 
+                          processing_mix_base, 
+                          jail_mix_base, 
+                          pop = pop, 
+                          quarantine_speedup_community = 1,
+                          high_risk_factor = high_risk_factor_base,
+                          detection_proportion = .x
+                          )) %>%
+  set_names(
+    paste0("Shelter in Place + Health Access : ",(detection_seq*100),"% of General Population")
+    )
+
+resdf_sip_detection <- purrr::map2_df(.x = params_sip_detection_seq,
+                                  .y = names(params_sip_detection_seq),
+                                  .f = ~tidy_covid_run(xstart,times,params = .x, 
+                                                       run_name = .y)
+                                  )
+
+plot_composite_diagnostics(resdf_sip_detection,
+                       base_run_name = paste0("Shelter in Place + Health Access : ",(1*100),"% of General Population")
+                       )
+
+
+params_be_detection_seq <- purrr::map(detection_seq,
+                                   ~set_parameters(betas_base*constant_be, 
+                          processing_mix_base, 
+                          jail_mix_base, 
+                          pop = pop, 
+                          quarantine_speedup_community = 1,
+                          high_risk_factor = high_risk_factor_base,
+                          arrest_rate_cut = arrest_rates_be, 
+                          detection_proportion = .x
+                          )) %>%
+  set_names(
+    paste0("Bail Eligible + Health Access : ",(detection_seq*100),"% of General Population")
+    )
+
+resdf_be_detection <- purrr::map2_df(.x = params_be_detection_seq,
+                                  .y = names(params_be_detection_seq),
+                                  .f = ~tidy_covid_run(xstart,times,params = .x, 
+                                                       run_name = .y)
+                                  )
+
+plot_composite_diagnostics(resdf_be_detection,
+                       base_run_name = paste0("Bail Eligible + Health Access : ",(1*100),"% of General Population")
+                       )
+```
+
+## Final Figures
+
+### Figure 1
+
+Figure 1. Infection curves from a simulated COVID-19 epidemic in the community (top) and the connected population of persons in a jail (bottom).
+
+```{r fig1, fig.height=5, dpi=90}
+base_red <- ggsci::pal_npg(alpha = 1)(6)[1] 
+
+# a copy of the plot individual percents function but more readable and without some things people would be unfamilar with
+ggp <- resdf_bau %>%
+    pivot_long_lsoda_df_detailed() %>%
+    filter(!is.na(location)) %>%
+    filter(!stringr::str_detect(disease_state,"Recovered")) %>%
+    filter(!stringr::str_detect(disease_state,"Susceptible")) %>%
+    group_by(disease_state,location_top,time,time_days) %>%
+    summarise(percent = sum(location_percent)) %>%
+    ungroup() %>%
+    ggplot(aes(x = time_days, y = percent, fill = disease_state)) +
+    geom_area(position = "stack") +
+    facet_row(~location_top) +
+    scale_y_continuous(labels = scales::percent, expand = expansion(0)) +
+    scale_x_continuous(breaks = c(0,30,60,90,120,150,180), expand = expansion(mult = c(0,.1))) +
+    ggtitle(paste0("Baseline Simulated COVID-19 Epidemic")) +
+    ylab("Percent of Population") +
+    xlab("Days") +
+    scale_fill_manual(values = c("Exposed \n(Active, No Symptoms)" = lighten(base_red,.6),
+                                  "Infected \n(Active, Symptoms)" = lighten(base_red,.3),
+                                  "Hospitalized" =  base_red
+                                  ),
+                      name="Disease\nState"
+                      ) +
+  theme(legend.position = c(0.8, 0.8),
+        legend.direction = "vertical",
+        legend.text = element_text(size = 8),
+        legend.background = element_rect(fill = "white",colour = "black",size = .1),
+        legend.box.background = element_rect(color="black", fill = "white", size=.1))
+
+ggp
+```
+
+### Figure 2
+
+Figure 2. Cumulative infections, hospitalizations and deaths from a simulated COVID-19 epidemic in the community (red) and the connected population of persons in jail (green) as well as members of the jail staff (blue). Left scenario is no changes to normal dynamics and right is shelter in place.
+
+```{r fig2, fig.height=10, dpi = 90}
+bau_red <-ggsci::pal_npg(alpha = 1)(6)[5]
+sip_green <- ggsci::pal_npg(alpha = 1)(6)[3]
+
+ggp <- comparison_df_base %>%
+    pivot_long_lsoda_df_metrics() %>%
+    ggplot(aes(x = time_days,y = value, color = run_name)) +
+    facet_wrap(Outcome ~ Location, scales = "free",ncol = 3, nrow = 3) +
+    geom_line() +
+    scale_y_continuous(labels = suffix_formatter,  expand = expansion(mult = c(0,.1))) +
+    scale_x_continuous(breaks = c(0,30,60,90,120,150,180), expand = expansion(mult = c(0,.1))) +
+    xlab("Days") +
+    ylab("Cumulative Counts") +
+    ggtitle("Cumulative Outcomes by Location and Population",
+            "End of Scenario at 6 Months; Count in Different Infection States"
+            ) +
+    scale_color_manual(values = c("Shelter in Place" = sip_green,
+                                  "Business As Usual" = bau_red
+                                  ),
+                       name="Scenario Name"
+                       ) +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10, face = "bold"),
+        legend.background = element_rect(fill = "white",colour = NA,size = .1),
+        legend.box.background = element_rect(color="white", fill = NA, size=.1))
+
+ggp
+```
+
+### Figure 3
+
+Figure 3. Comparisons of cumulative outcomes at 5 Months from Epidemic Curve - a baseline scenario (dark blue), discontinuing arresting bail eligible individuals (blue - 25% lighter) (25\% overall reduction), discontinuing arresting individuals for low level offenses (blue - 83% lighter) (83\% overall reduction), a 90\% reduction in arrests in populations vulnerable to COVID-19 (red - 90% lighter) and a large scale arrest reduction down to 10% of current arrest (blue - 90% lighter). All scenarios have an accompanying shelter-in-place order within the community.
+
+```{r fig3, fig.height=10, dpi = 90}
+arrest_base_color <- ggsci::pal_npg(alpha = 1)(6)[4]
+arrest_be_color <- lighten(arrest_base_color,.25)
+arrest_ll_color <- lighten(arrest_base_color,.83)
+arrest_fewer_color <- lighten(arrest_base_color,.9)
+arrest_vp_color <- hex(mixcolor(.5,hex2RGB(lighten(arrest_base_color,.9)),hex2RGB(base_red)))
+
+ggp <- comparison_df_with_arrests %>%
+    pivot_long_lsoda_df_metrics() %>%
+    arrange(time) %>%
+    filter(time == last(time)) %>%
+    ggplot(aes(y = forcats::fct_reorder(run_name,value), x = value, 
+               fill = forcats::fct_relevel(run_name,"Shelter in Place","Bail Eligible","Vulnerable Only","Low Level","Arrest Fewer People"))) +
+    geom_col() +
+    facet_wrap(Location ~ Outcome, scales = "free", ncol = 3, nrow = 3) +
+    theme(legend.position = "bottom") +
+    theme(axis.text.y = element_blank(), axis.title.y = element_blank()) +
+    scale_x_continuous(labels = suffix_formatter) +
+    scale_fill_manual(values = c("Shelter in Place" = arrest_base_color,
+      "Bail Eligible" = arrest_be_color,
+      "Arrest Fewer People" = arrest_fewer_color,
+      "Low Level"= arrest_ll_color,
+      "Vulnerable Only"= arrest_vp_color
+                                 ),
+      name="Scenario\nName"
+      ) +
+    guides(fill = guide_legend(nrow = 2)) +
+    xlab("Population Count") +
+    ggtitle("Outcomes by Arrest Reduction Scenarios",
+            "End of Scenario at 6 Months, Baseline of Shelter in Place in Community"
+            )
+
+ggp
+```
+
+### Figure 4
+
+Figure 4. Comparisons of cumulative outcomes at 6 Months from Epidemic Curve with release speed Ups across each of the various arrest reduction scenarios including a dotted black line for the baseline shelter in place scenario with no arrest reductions and no release speed ups, discontinuing arresting bail eligible individuals (blue - 25% lighter) (25\% overall reduction) with release speed ups, discontinuing arresting individuals for low level offenses (blue - 83% lighter) (83\% overall reduction) with release speed ups, a 90\% reduction in arrests in populations vulnerable to COVID-19 (red - 90% lighter) with release speed ups. All scenarios have an accompanying shelter-in-place order within the community.
+
+```{r fig4, fig.height=10, dpi=90}
+#Same share issues that appear here appear elsewhere
+tmp_df <- comparisons_df_arrest_plus_release %>%
+  pivot_long_lsoda_df_metrics() %>%
+  arrange(time) %>%
+  filter(time == last(time)) %>%
+  mutate(change_text = stringr::str_extract_all(run_name,"[0-9|\\.|,|%]{1,4}"),
+         change_numeric = stringr::str_remove_all(change_text,",") %>%
+           stringr::str_remove_all("%") %>%
+           as.numeric()) %>%
+  separate(run_name,
+           c("run_base","post_indicator"),
+           sep = "\\+", remove = FALSE) %>%
+  mutate_if(is.character,stringr::str_trim)
+
+sip_df <- filter(tmp_df, run_name == "Shelter in Place")
+tmp_df <- filter(tmp_df, run_name != "Shelter in Place")
+
+ggp <- tmp_df %>%
+  ggplot(aes(x = change_numeric, y = value, color = forcats::fct_relevel(run_base,"Bail Eligible", "Vulnerable Only","Low Level"))) +
+    geom_point() +
+    geom_hline(data = sip_df, aes(yintercept = value),linetype = "dashed", color = sip_green) +
+    facet_wrap(Location ~ Outcome, scales = "free", ncol = 3, nrow = 3) +
+    theme(legend.position = "bottom") +
+    scale_y_continuous(labels = suffix_formatter, expand = expansion(mult = c(0,.2))) +
+    scale_x_continuous(breaks = c(1,1.5,2),labels = c("1X","1.5X","2X")) +
+    xlab("Rate of Release Speed Compared to Baseline (1x)") +
+    ylab("Count") +
+   ggtitle("Outcomes by Arrest Reduction with Increased Release Rates",
+            "End of Scenario at 6 Months, Baseline of Shelter in Place in Community"
+            ) +
+  scale_color_manual(values = c(
+    "Bail Eligible" = arrest_be_color,
+    "Low Level"= arrest_ll_color,
+    "Vulnerable Only"= arrest_vp_color
+  ),
+  name = "Scenario Name"
+  )
+
+ggp
+```
+
+### Figure 5
+
+Figure 5. UNKOWN FIGURE TYPE showing the effect of reducing mixing in jails on staff once the population has reduced substantially.
+
+```{r fig5, fig.height = 8, dpi = 90}
+tmp_df <- resdf_be_mix %>%
+  pivot_long_lsoda_df_detailed() %>%
+  filter(!stringr::str_detect(disease_state,"Recovered")) %>%
+  filter(!stringr::str_detect(disease_state,"Susceptible")) %>%
+  group_by(time,time_days,run_name,composite_top) %>%
+  summarise(n = sum(state)) %>%
+  ungroup() %>%
+  mutate(change_text = stringr::str_extract_all(run_name,"[0-9|\\.|,|%]{1,4}"),
+         change = stringr::str_remove_all(change_text,",") %>%
+           stringr::str_remove_all("%") %>%
+           as.numeric()) %>%
+  separate(run_name,
+           c("run_base","post_indicator"),
+           sep = "\\+", remove = FALSE) %>%
+  mutate_if(is.character,stringr::str_trim) %>%
+  mutate(change_special = case_when(
+    change == 100 ~ "Shelter in Place Equivalent",
+    change == 10 ~ "Baseline Mixing",
+    TRUE ~ "Between"
+  ))
+  
+ggp <- ggplot(tmp_df,aes(x = time_days, y = n, fill = factor(change), colour = change_special)) +
+  geom_line() + 
+  facet_col(~composite_top, scales = "free") +
+  #geom_point(data = sip_df, aes(x = time_days, y = n,fill = "green")) +
+  scale_y_continuous(labels = suffix_formatter, expand = expansion(0)) +
+  scale_x_continuous(breaks = c(0,30,60,90,120,150,180), 
+                     expand = expansion(mult = c(0,.1))) +
+    # scale_fill_manual(values = c("green" = sip_green), 
+    #                  name = "Community only Shelter in Place") +
+    scale_color_manual(values = c("Shelter in Place Equivalent" = sip_green,
+                       "Between" = lighten(arrest_be_color,.8),
+                       "Baseline Mixing" = arrest_be_color),
+                         name = "% of Community Mixing \n (Shelter in Place)") +
+      ggtitle(
+      paste0("Outcomes with Reducing Mixing"),
+            "Bail Eligible Scneario with Mixing Reduction from Baseline to General Population Level Mixing"
+            ) +
+    ylab("Infections (incl. Hospitalized)") +
+    xlab("Days")
+    
+ggp
+```
+
+### Figure 6
+
+Figure 6. Cumulative deaths and hospitalizations among persons in jail based on the probability of being identified as needing medical care and receiving that care. Modeled scenarios are 95\% (COLOR), 99\% (COLOR) and 100\% (COLOR), the latter being the same probability as in the community.
+
+```{r fig6, fig.height=5, dpi = 90}
+tmp_df <- resdf_sip_detection %>%
+  pivot_long_lsoda_df_metrics() %>%
+  arrange(time) %>%
+  filter(time == last(time)) %>%
+  mutate(change_text = stringr::str_extract_all(run_name,"[0-9|\\.|,|%]{1,4}"),
+         change_numeric = stringr::str_remove_all(change_text,",") %>%
+           stringr::str_remove_all("%") %>%
+           as.numeric()) %>%
+  separate(run_name,
+           c("run_base","post_indicator"),
+           sep = "\\+", remove = FALSE) %>%
+  mutate_if(is.character,stringr::str_trim) %>%
+  filter(Location == "Incarcerated People")
+
+ggp <- ggplot(tmp_df,aes(x = Outcome, y = value, fill = factor(change_numeric))) +
+    geom_col(position = "dodge") +
+    theme(legend.position = "bottom") +
+    scale_y_continuous(labels = suffix_formatter) +
+    scale_fill_manual(values = c(
+      "95" = darken(sip_green,.5),
+      "99" = darken(sip_green,.25),
+      "100"= sip_green
+     ),
+      name="Healthcare Access As Compared to Community (%)"
+      ) +
+    ylab("Population Count") +
+    xlab("") +
+    ggtitle("Jail Outcomes Depending on Healthcare Access in Jail",
+            "End of Scenario at 6 Months, Assuming Shelter in Place in Community Only"
+            )
+    
+ggp
+```
